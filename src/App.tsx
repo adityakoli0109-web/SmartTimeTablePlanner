@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, 
   Calendar, 
@@ -11,8 +11,7 @@ import {
   X,
   Plus,
   Sparkles,
-  Trash2,
-  LogOut
+  Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { View, Task, TimetableEntry, UserSettings, SubjectRequirement } from './types';
@@ -21,12 +20,11 @@ import { doc, setDoc, onSnapshot } from "firebase/firestore";
 
 // --- Components ---
 
-const Sidebar = ({ currentView, setView, darkMode, toggleDarkMode, onLogout }: { 
+const Sidebar = ({ currentView, setView, darkMode, toggleDarkMode }: { 
   currentView: View, 
   setView: (v: View) => void,
   darkMode: boolean,
-  toggleDarkMode: () => void,
-  onLogout: () => void
+  toggleDarkMode: () => void
 }) => {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -76,21 +74,13 @@ const Sidebar = ({ currentView, setView, darkMode, toggleDarkMode, onLogout }: {
           ))}
         </nav>
 
-        <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-2">
+        <div className="p-4 border-t border-slate-200 dark:border-slate-800">
           <button
             onClick={toggleDarkMode}
             className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400"
           >
             <span className="text-sm font-medium">{darkMode ? 'Dark Mode' : 'Light Mode'}</span>
             {darkMode ? <Moon size={18} /> : <Sun size={18} />}
-          </button>
-          
-          <button
-            onClick={onLogout}
-            className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/20 transition-all"
-          >
-            <span className="text-sm font-medium">Logout</span>
-            <LogOut size={18} />
           </button>
         </div>
       </aside>
@@ -791,73 +781,66 @@ export default function App() {
     pomodoroTheme: 'default',
     userName: 'Student'
   });
-  const [isAuthChecked, setIsAuthChecked] = useState(false);
-  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [userEmail] = useState<string>("default_user");
+  const isSyncingFromServer = useRef(false);
 
-  // Auth check and Firestore sync
+  // Firestore sync
   useEffect(() => {
-    const user = localStorage.getItem('currentUser');
-    if (!user) {
-      window.location.href = 'login.html';
-    } else {
-      const userData = JSON.parse(user);
-      const email = userData.email;
-      setUserEmail(email);
-      setSettings(prev => ({ ...prev, userName: userData.username || 'Student' }));
-      setIsAuthChecked(true);
+    const email = "default_user";
+    
+    // Listen for Firestore updates
+    const userDocRef = doc(db, "users", email);
+    const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        isSyncingFromServer.current = true;
+        if (data.tasks) setTasks(data.tasks);
+        if (data.timetable) setTimetable(data.timetable);
+        if (data.settings) setSettings(data.settings);
+        // Reset flag after state updates are processed
+        setTimeout(() => {
+          isSyncingFromServer.current = false;
+        }, 100);
+      } else {
+        // If no doc exists, create one with current local data (if any)
+        const initialData = {
+          tasks: JSON.parse(localStorage.getItem('studyflow_tasks') || '[]'),
+          timetable: JSON.parse(localStorage.getItem('studyflow_timetable') || '[]'),
+          settings: JSON.parse(localStorage.getItem('studyflow_settings') || '{"darkMode":false,"pomodoroTheme":"default","userName":"Student"}')
+        };
+        setDoc(userDocRef, initialData).catch(err => console.error("Error creating user doc:", err));
+      }
+    }, (error) => {
+      console.error("Firestore snapshot error:", error);
+    });
 
-      // Listen for Firestore updates
-      const userDocRef = doc(db, "users", email);
-      const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          if (data.tasks) setTasks(data.tasks);
-          if (data.timetable) setTimetable(data.timetable);
-          if (data.settings) setSettings(data.settings);
-        } else {
-          // If no doc exists, create one with current local data (if any)
-          const initialData = {
-            tasks: JSON.parse(localStorage.getItem('studyflow_tasks') || '[]'),
-            timetable: JSON.parse(localStorage.getItem('studyflow_timetable') || '[]'),
-            settings: JSON.parse(localStorage.getItem('studyflow_settings') || '{"darkMode":false,"pomodoroTheme":"default","userName":"Student"}')
-          };
-          setDoc(userDocRef, initialData);
-        }
-      });
-
-      return () => unsubscribe();
-    }
+    return () => unsubscribe();
   }, []);
 
-  // Save data to Firestore (throttled/debounced would be better, but simple setDoc for now)
+  // Save data to Firestore
   useEffect(() => {
-    if (isAuthChecked && userEmail) {
+    if (!isSyncingFromServer.current) {
       const userDocRef = doc(db, "users", userEmail);
-      setDoc(userDocRef, { tasks, timetable, settings }, { merge: true });
+      setDoc(userDocRef, { tasks, timetable, settings }, { merge: true })
+        .catch(err => console.error("Error saving to Firestore:", err));
       
       // Also keep local storage as fallback
       localStorage.setItem('studyflow_tasks', JSON.stringify(tasks));
       localStorage.setItem('studyflow_timetable', JSON.stringify(timetable));
       localStorage.setItem('studyflow_settings', JSON.stringify(settings));
-      
-      if (settings.darkMode) {
-        document.documentElement.classList.add('dark');
-      } else {
-        document.documentElement.classList.remove('dark');
-      }
     }
-  }, [tasks, timetable, settings, isAuthChecked, userEmail]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('currentUser');
-    window.location.href = 'login.html';
-  };
+    // Always apply theme locally
+    if (settings.darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [tasks, timetable, settings, userEmail]);
 
   const toggleDarkMode = () => {
     setSettings(prev => ({ ...prev, darkMode: !prev.darkMode }));
   };
-
-  if (!isAuthChecked) return null;
 
   return (
     <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans">
@@ -866,7 +849,6 @@ export default function App() {
         setView={setView} 
         darkMode={settings.darkMode} 
         toggleDarkMode={toggleDarkMode} 
-        onLogout={handleLogout}
       />
       
       <main className="flex-1 p-4 lg:p-8 overflow-y-auto">
